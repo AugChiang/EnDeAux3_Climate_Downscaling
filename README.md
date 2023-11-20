@@ -11,9 +11,15 @@ Resolver involves Upsampling Layer with Efficiency Sub-pixel method (of ESPCN) a
 ![image](https://github.com/AugChiang/EnRe3_Climate_Downscaling/blob/main/arch.png)
 
 # Model Prediction
+
 Prediction of precipitation on 2019.08.15 </br>
 left-top: ERA5 Reanalysis Data of Precipitation </br>
 left-bottom: TCCIP gridded observation </br>
 right-top: MAE error heatmap </br>
 right-bottom: model prediction </br>
 ![image](https://github.com/AugChiang/EnRe3_Climate_Downscaling/blob/main/res/20190815.png)
+
+# Metrics
+Evaluation on metrics of pixel-wise error: mean absolute error (MAE) and root mean square error (RMSE). </br>
+And relationship: Pearson Correletaion (Corr) and Structural Similarity Index (SSIM). </br>
+![image](https://github.com/AugChiang/EnRe3_Climate_Downscaling/blob/main/res/metric.png)

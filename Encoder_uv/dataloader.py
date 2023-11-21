@@ -22,6 +22,13 @@ def Scale01(arr, min=None, max=None):
         max = np.max(arr)
     return (arr-min)/(max-min)
 
+def concataux(x, auxarr):
+    assert len(x.shape) == 2 # HW,C
+    auxarr = auxarr.flatten()
+    auxarr = np.expand_dims(auxarr, axis=-1) # HW, C
+    x = np.concatenate((x, auxarr), axis=-1)
+    return x
+
 class MyDataset():
     def __init__(self, xtrpath, ytrpath, x_max, y_max, size, aux_path,
                  shuffle_size, batch_size, seed=None, split=0.9):
@@ -41,6 +48,14 @@ class MyDataset():
 
         self.max = {"input":np.log1p(x_max),"output":np.log1p(y_max)}
         self.len = len(self.xtrpath)
+
+        self.paths = self.__getdatapath__()
+        self.aux_boundary_val = {'u':{'min':-19.8128, 'max':22.79312, 'mean':1.49016},
+                                 'v':{'min':-23.51668, 'max':23.240267, 'mean':-0.1382056},
+                                 'q700':{'min':96824.2, 'max':103687.2, 'mean':100255.7},
+                                 'msl':{'min':0, 'max':0.0146, 'mean':0.0073},
+                                 't2m':{'min':-5.2, 'max':32.262, 'mean':13.531},
+                                 'lr':{'min':0, 'max':1277.652, 'mean':638.826}}
 
     def __pathcheck__(self):
         if(len(self.xtrpath) != len(self.ytrpath)):
@@ -78,43 +93,26 @@ class MyDataset():
 
             x = Scale01(arr=x, min=0, max=self.max['input'])
             y = Scale01(arr=y, min=0, max=self.max['output'])
-            x = np.expand_dims(x,-1)
+            x = np.expand_dims(x,-1) # HW, 1
 
             if self.aux_path:
-                low_reso = np.load(os.path.join(self.aux_path['low_reso'], 'lr_'+date)).flatten()
-                u = np.load(os.path.join(self.aux_path['u'], 'u_'+date)).flatten()
-                v = np.load(os.path.join(self.aux_path['v'], 'v_'+date)).flatten() 
-                q700 = np.load(os.path.join(self.aux_path['q700'], 'q700_'+date)).flatten()
-                msl = np.load(os.path.join(self.aux_path['msl'], 'msl_'+date)).flatten()
-                t2m = np.load(os.path.join(self.aux_path['t2m'], 't2m_'+date)).flatten()
-
-                low_reso = Scale01(arr=low_reso, max=1277.652)
-                u = ScaleNeg11(arr=u, mean=1.49016)
-                v = ScaleNeg11(arr=v, mean=-0.1382056)
-                q700 = Scale01(q700, min=96824.2, max=103687.2)
-                msl = Scale01(msl, min=0, max=0.0146)
-                t2m = Scale01(t2m, min=-5.2, max=32.262)
-
-                low_reso = np.expand_dims(low_reso,-1)
-                u = np.expand_dims(u,-1)
-                v = np.expand_dims(v,-1)
-                q700 = np.expand_dims(q700,-1)
-                msl = np.expand_dims(msl,-1)
-                t2m = np.expand_dims(t2m,-1)
-                
-                x = np.concatenate((x, low_reso), axis=-1)
-                x = np.concatenate((x,u), axis=-1)
-                x = np.concatenate((x,v), axis=-1)
-                x = np.concatenate((x,q700), axis=-1)
-                x = np.concatenate((x,msl), axis=-1)
-                x = np.concatenate((x,t2m), axis=-1)
+                for auxkey in self.aux_path.keys():
+                    auxarr = np.load(os.path.join(self.aux_path[auxkey], auxkey+'_'+date)).flatten()
+                    if auxkey in ['u', 'v']:
+                        auxarr = ScaleNeg11(arr=auxarr, mean=self.aux_boundary_val[auxkey]['mean'])
+                    else:
+                       auxarr = Scale01(auxarr, min=self.aux_boundary_val[auxkey]['min'],
+                                               max=self.aux_boundary_val[auxkey]['max'])
+                       
+                x = concataux(x, auxarr=auxarr)
 
             x = np.reshape(x, self.x_size)
             y = np.reshape(y, self.y_size)
             yield x, y
 
     def train_dataset_gen(self):
-        trp, _, __ = self.__getdatapath__()
+        # trp, _, __ = self.__getdatapath__()
+        trp = self.paths[0]
         random.shuffle(trp)
         train_dataset = tf.data.Dataset.from_generator(
                 self.__datagen__, args = [trp],
@@ -125,7 +123,8 @@ class MyDataset():
         return train_dataset
 
     def val_dataset_gen(self):
-        _, val, __ = self.__getdatapath__()
+        # _, val, __ = self.__getdatapath__()
+        val = self.paths[1]
         val_dataset = tf.data.Dataset.from_generator(
                 self.__datagen__, args = [val],
                 output_types = (np.float32, np.float32),
@@ -134,10 +133,52 @@ class MyDataset():
         return val_dataset
     
     def test_dataset_gen(self):
-        _, __, test = self.__getdatapath__()
+        # _, __, test = self.__getdatapath__()
+        test = self.paths[2]
         test_dataset = tf.data.Dataset.from_generator(
                 self.__datagen__, args = [test],
                 output_types = (np.float32, np.float32),
                 output_shapes = (self.x_size, self.y_size))
         test_dataset = test_dataset.batch(self.batch_size)
         return test_dataset
+    
+def datagen(self, paths, aux_path:dict, x_max, x_size:tuple):
+    for i in range(len(paths)):
+        date = paths[i][-12:] # yyyymmdd.npy
+        # print("Date: ", date) # type:=bytes
+        x = np.load(paths[i]).flatten()
+        x = np.log1p(x)
+        x = Scale01(arr=x, min=0, max=np.log1p(x_max))
+        x = np.expand_dims(x,-1)
+
+        if aux_path:
+            low_reso = np.load(os.path.join(aux_path['low_reso'], 'lr_'+date)).flatten()
+            u = np.load(os.path.join(aux_path['u'], 'u_'+date)).flatten()
+            v = np.load(os.path.join(aux_path['v'], 'v_'+date)).flatten()
+            q700 = np.load(os.path.join(aux_path['q700'], 'q700_'+date)).flatten()
+            msl = np.load(os.path.join(aux_path['msl'], 'msl_'+date)).flatten()
+            t2m = np.load(os.path.join(aux_path['t2m'], 't2m_'+date)).flatten()
+
+            low_reso = Scale01(arr=low_reso, max=1277.652)
+            u = ScaleNeg11(arr=u, mean=1.49016)
+            v = ScaleNeg11(arr=v, mean=-0.1382056)
+            q700 = Scale01(q700, min=96824.2, max=103687.2)
+            msl = Scale01(msl, min=0, max=0.0146)
+            t2m = Scale01(t2m, min=-5.2, max=32.262)
+
+            low_reso = np.expand_dims(low_reso,-1)
+            u = np.expand_dims(u,-1)
+            v = np.expand_dims(v,-1)
+            q700 = np.expand_dims(q700,-1)
+            msl = np.expand_dims(msl,-1)
+            t2m = np.expand_dims(t2m,-1)
+            
+            x = np.concatenate((x, low_reso), axis=-1)
+            x = np.concatenate((x,u), axis=-1)
+            x = np.concatenate((x,v), axis=-1)
+            x = np.concatenate((x,q700), axis=-1)
+            x = np.concatenate((x,msl), axis=-1)
+            x = np.concatenate((x,t2m), axis=-1)
+
+        x = np.reshape(x, x_size)
+        yield x, date

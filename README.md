@@ -23,3 +23,6 @@ right-bottom: model prediction </br>
 Evaluation on metrics of pixel-wise error: mean absolute error (MAE) and root mean square error (RMSE). </br>
 And relationship: Pearson Correletaion (Corr) and Structural Similarity Index (SSIM). </br>
 ![image](https://github.com/AugChiang/EnRe3_Climate_Downscaling/blob/main/res/metric.png)
+
+Compared to traditional statistical downscaling method, BCSD (Bias-Corrected Spatial Disaggregation): </br>
+![image](https://github.com/AugChiang/EnRe3_Climate_Downscaling/blob/main/res/bcsd_metric.png)

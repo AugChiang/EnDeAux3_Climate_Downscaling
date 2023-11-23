@@ -18,6 +18,7 @@ batch_size = 64
 xn, xm = 14, 9
 vector_length = 126
 scale = 5
+yn, ym = xn*scale, xm*scale
 random_seed = None
 split = 0.9
 target_sequence_length = vector_length  # Target sequence length matches input
@@ -46,7 +47,7 @@ patience = 20
 wait = 0
 best = float('inf')
 
-wmse_gamma = 1.0
+wmse_gamma = 0.0
 class wmse(tf.keras.losses.Loss):
     def __init__(self, wmse_gamma = wmse_gamma):
         super().__init__()
@@ -231,10 +232,10 @@ def getdatapath(path_list, split=split, seed=random_seed):
 
 
 def res_eval(x, date, mask, num_valid_grid_points):
-    gt = np.load(os.path.join("sd0_5km", date)).astype('float32')
-    gt = np.reshape(gt, (70,45))
+    gt = np.load(os.path.join(y_train_path, date)).astype('float32')
+    gt = np.reshape(gt, (yn,ym))
     # x = x.astype('float32')
-    x = np.reshape(x, (70,45))
+    x = np.reshape(x, (yn,ym))
 
     diff = abs((gt - x)*mask) # pixel-wise difference
 
@@ -263,7 +264,7 @@ def pred():
     test_pred_save_dir = os.path.join(save_dir, 'test_pred')
 
     mask = np.load("mask/mask_sd5km.npy")
-    mask = np.reshape(mask, (70,45))
+    mask = np.reshape(mask, (yn,ym))
     num_valid_grid_points = mask[mask>0].shape[0]
 
     if not os.path.exists(val_pred_save_dir):
@@ -341,7 +342,7 @@ def pred():
 
 def npytotxt():
     mask = np.load("mask/mask_sd5km.npy")
-    mask = np.reshape(mask, (70,45))
+    mask = np.reshape(mask, (yn,ym))
     latx5 = np.linspace(start=25.25, stop=22., num=xn*5, endpoint=True)
     lonx5 = np.linspace(start=120., stop=122., num=xm*5, endpoint=True)
     val_pred_txt_save_dir = os.path.join(save_dir, 'val_pred_txt')
@@ -358,7 +359,7 @@ def npytotxt():
         for file in paths:
             date = file[-12:-4]
             pred = np.load(file)
-            pred = np.reshape(pred, (70,45))
+            pred = np.reshape(pred, (yn,ym))
             with open(os.path.join(saveto, f"{date}.txt"), 'a') as f:
                 f.write("lat, lon, precipitation(mm) \n")
                 for row in range(70):
@@ -383,7 +384,7 @@ def QoF():
     DATE = []
     threshold = [80, 200, 350, 500]
     mask = np.load("mask/mask_sd5km.npy")
-    mask = np.reshape(mask, (70,45))
+    mask = np.reshape(mask, (yn,ym))
 
     qof_save_dir = os.path.join(save_dir, 'QoFs')
     if not os.path.exists(qof_save_dir):

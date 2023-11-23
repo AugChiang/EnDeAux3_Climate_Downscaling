@@ -34,8 +34,8 @@ dff = 128
 # Dimension of feedforward layer
 x_train_path = "ERA5_tp_14x9"
 y_train_path = "sd0_5km"
-
-mask = np.load("mask/mask_sd5km.npy")
+mask_path = "mask/mask_sd5km.npy"
+mask = np.load(mask_path)
 mask = np.reshape(mask, (xn*scale, xm*scale, 1))
 aux_path = {'lr':'sd_25km',
             'u':'u_npy', 'v':'v_npy'}

@@ -41,7 +41,7 @@ aux_path = {'lr':'sd_25km',
             'u':'u_npy', 'v':'v_npy'}
 channel = 1 + len(aux_path)
 save_dir = "EnRe_AUX3_dff128_WMSE"
-
+weights_dir = "weights"
 # early stopping constants
 patience = 20
 wait = 0
@@ -272,8 +272,8 @@ def pred():
     if not os.path.exists(test_pred_save_dir):
         os.mkdir(test_pred_save_dir)
 
-    model_encoder.load_weights(save_dir + f"/encoder_variables")
-    model_resolver.load_weights(save_dir + f"/resolver_variables")
+    model_encoder.load_weights(weights_dir + f"/encoder_variables")
+    model_resolver.load_weights(weights_dir + f"/resolver_variables")
     data_paths = glob(x_train_path + '/*.npy')
     data_paths.sort()
     # print("len of data paths: ", len(data_paths))

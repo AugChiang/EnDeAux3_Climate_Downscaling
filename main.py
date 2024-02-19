@@ -1,5 +1,6 @@
 from Encoder_uv.model import Encoder, Resovler
-from Encoder_uv.dataloader import MyDataset, datagen, Scale01, ScaleNeg11
+from Encoder_uv.dataloader import MyDataset, datagen, Scale01, ScaleNeg11, GetTopology
+from Encoder_uv import loss
 import numpy as np
 import os
 from glob import glob
@@ -10,78 +11,102 @@ import scipy.stats
 from tensorflow.image import ssim
 from tensorflow import get_static_value
 import pandas as pd
+import configparser
 
-# Define constants
-num_epochs = 1000
-checkpt = 1
-batch_size = 64
-xn, xm = 14, 9
-vector_length = 126
-scale = 5
-yn, ym = xn*scale, xm*scale
-random_seed = None
-split = 0.9
+# 
+config = configparser.ConfigParser()
+config.read('config.ini')
+
+# resolution related
+xn = config['resolution'].getint('input_height')
+xm = config['resolution'].getint('input_width')
+topo_x = config['resolution'].getint('topo_height')
+topo_y = config['resolution'].getint('topo_width')
+vector_length = config['resolution'].getint('vector_length')
 target_sequence_length = vector_length  # Target sequence length matches input
-x_max = 31.544506
-y_max = 1401.9225
 
-# Initialize the model with a one-unit output layer
-num_layers = 4
-d_model = 128 # Dimension of embeddings
-num_heads = 6  # Number of attention heads
-dff = 128
+# scsaling factor
+scale = config['scale_factor'].getint('scale')
 
-# Dimension of feedforward layer
-x_train_path = "ERA5_tp_14x9"
-y_train_path = "sd0_5km"
-mask_path = "mask/mask_sd5km.npy"
+# model training var
+num_epochs = config['training'].getint('num_epochs')
+checkpt = config['training'].getint('check_pt')
+batch_size = config['training'].getint('batch_size')
+encoder_lr = config['training'].getfloat('encoder_lr')
+resolver_lr = config['training'].getfloat('resolver_lr')
+
+# data
+try:
+    random_seed = config['data'].getint('random_seed')
+except ValueError:
+    random_seed = None
+
+split = config['data'].getfloat('split')
+x_max = config['data'].getfloat('input_total_max')
+y_max = config['data'].getfloat('label_total_max')
+shuffle_fac = config['data'].getint('shuffle_factor') # n times of batch_size as shuffle buffer size
+# sampling_a = config['data'].getfloat('sampling_fac') # sampling strategy, see 'dataloader.py'
+
+# model config
+num_layers = config['model'].getint('num_layers')
+d_model = config['model'].getint('embedding_size') # Dimension of embeddings
+num_heads = config['model'].getint('num_attention_heads')  # Number of attention heads
+dff = config['model'].getint('feed_forward_size') # feed forward projection size
+drop_rate = config['model'].getfloat('drop_rate')
+
+# normalization option
+x_use_log1 = config['normalization'].getboolean('input_use_log1') # log(x+1)
+y_use_log1 = config['normalization'].getboolean('label_use_log1') # log(x+1)
+norm_01 = config['normalization'].getboolean('norm_01')
+topo_use_log1 = config['normalization'].getboolean('topo_use_log1')
+topo_norm_01 = config['normalization'].getboolean('topo_norm_01')
+
+# path
+x_train_path = config['path']['x_training_path']
+y_train_path = config['path']['y_training_path']
+topo_path = config['path']['topo_path']
+mask_path = config['path']['mask_path']
+save_dir = config['path']['save_path']
+
 mask = np.load(mask_path)
 mask = np.reshape(mask, (xn*scale, xm*scale, 1))
-aux_path = {'lr':'sd_25km',
-            'u':'u_npy', 'v':'v_npy'}
+aux_path = dict(config['aux'])
 channel = 1 + len(aux_path)
-save_dir = "EnRe_AUX3_dff128_WMSE"
-weights_dir = "weights"
-# early stopping constants
-patience = 20
+
+
+# early stopping
+encoder_patience = config['early_stop'].getint('encoder_patience')
+resolver_patience = config['early_stop'].getint('resolver_patience')
 wait = 0
 best = float('inf')
 
-wmse_gamma = 0.0
-class wmse(tf.keras.losses.Loss):
-    def __init__(self, wmse_gamma = wmse_gamma):
-        super().__init__()
-        self.gamma = wmse_gamma
-
-    def call(self, y_true, y_pred):
-        if y_true.shape[1]!=y_pred.shape[1] or y_true.shape[2]!=y_pred.shape[2]:
-            y = tf.image.resize(y_true, [y_pred.shape[1],y_pred.shape[2]], method='bilinear')
-        else:
-            y = y_true
-        se = tf.math.square(y_pred-y)
-        wse = (1-self.gamma)*se + self.gamma*tf.math.multiply(se, y)
-        wmse = tf.reduce_mean(wse)
-        return wmse
+# weighted loss function
+wmse_gamma = config['loss_gamma'].getfloat('wmse_gamma')
 
 
-# Define loss function (e.g., mean squared error) and optimizer (e.g., Adam)
-# loss_object = tf.keras.losses.MeanSquaredError()
-# loss_object = tf.keras.losses.KLDivergence()
-loss_object = wmse()
-optimizer = tf.keras.optimizers.Adam(learning_rate=5e-5)  # encoder's
-optimizer2 = tf.keras.optimizers.Adam(learning_rate=5e-5) # resolver's
+# Define loss function (e.g., mean squared error)
+# and optimizer (e.g., Adam)
+loss_object = loss.wmse()
+optimizer = tf.keras.optimizers.Adam(learning_rate=encoder_lr)  # encoder's
+optimizer2 = tf.keras.optimizers.Adam(learning_rate=resolver_lr) # resolver's
 
 # np.log1p and [0,1], [-1,1] for aux data
 dataset = MyDataset(xtrpath=x_train_path, ytrpath=y_train_path, aux_path=aux_path,
-                    shuffle_size=batch_size*4, batch_size=batch_size, seed=random_seed,
+                    x_use_log1=x_use_log1, y_use_log1=y_use_log1,
+                    shuffle_size=batch_size*shuffle_fac, batch_size=batch_size, seed=random_seed,
                     x_max=x_max, y_max=y_max, size=((vector_length, channel),(xn*scale, xm*scale,1)))
+# topography
+topo = GetTopology(topo_path=topo_path,
+                   topo_x=topo_x, topo_y=topo_y,
+                   y_n=xn*scale, y_m=xm*scale,
+                   use_log1=topo_use_log1, use_01=topo_norm_01)
 
-myresolver = Resovler(scale=scale)
+myresolver = Resovler(scale=scale, topo=topo)
 myencoder = Encoder(xn = xn, xm = xm,
                     num_layers=num_layers, d_model=d_model,
                     num_heads=num_heads, dff=dff,
                     input_vocab_size=vector_length,  # Input vocabulary size matches vector_length
-                    channel=channel, dropout_rate=0.2)
+                    channel=channel, dropout_rate=drop_rate)
 # compile the model
 encoder_input = tf.keras.layers.Input(shape=(vector_length, channel))
 encoder_output = myencoder(encoder_input, training=True, mask=None)
@@ -114,7 +139,7 @@ model_resolver.compile(optimizer=[optimizer2], loss=loss_object)
 #         loss = loss_object(labels, predictions, lr=lr)
 
 #     return loss
-def train(save_dir=save_dir, num_epochs=num_epochs, patience=patience, wait=wait, best=best):
+def train(save_dir=save_dir, num_epochs=num_epochs):
     tr_history = []
     val_history = []
     # dataset
@@ -155,7 +180,7 @@ def train(save_dir=save_dir, num_epochs=num_epochs, patience=patience, wait=wait
         if(avg_val_loss < best):
             best = avg_val_loss
             wait = 0
-        if(wait >= patience):
+        if(wait >= encoder_patience):
             break
 
     # save the trained model
@@ -169,7 +194,6 @@ def train(save_dir=save_dir, num_epochs=num_epochs, patience=patience, wait=wait
     print("Complete Saving the Losses...")
 
     # reset early stopping constants
-    patience = 20
     wait = 0
     best = float('inf')
 
@@ -213,12 +237,12 @@ def train(save_dir=save_dir, num_epochs=num_epochs, patience=patience, wait=wait
         if(avg_val_loss < best):
             best = avg_val_loss
             wait = 0
-        if(wait >= patience):
+        if(wait >= resolver_patience):
             break
 
     model_resolver.save_weights(save_dir + f"/resolver_variables")
     print("Complete Saving the Model Weights...")
-    np.save(os.path.join(save_dir,  'resolver_losses.npy'), np.array(tr_history))
+    np.save(os.path.join(save_dir,  'resolver_tr_losses.npy'), np.array(tr_history))
     np.save(os.path.join(save_dir, 'resolver_val_losses.npy'), np.array(val_history))
     print("Complete Saving the Losses...")
 
@@ -230,12 +254,12 @@ def getdatapath(path_list, split=split, seed=random_seed):
     # train, val, test
     return path_list[:train_len], path_list[train_len:train_len+test_len], path_list[train_len+test_len:]
 
-
-def res_eval(x, date, mask, num_valid_grid_points):
-    gt = np.load(os.path.join(y_train_path, date)).astype('float32')
-    gt = np.reshape(gt, (yn,ym))
+# evaluation of x,y
+def res_eval(x, date, mask, num_valid_grid_points, y_path=y_train_path):
+    gt = np.load(os.path.join(y_path, date)).astype('float32')
+    gt = np.reshape(gt, (70,45))
     # x = x.astype('float32')
-    x = np.reshape(x, (yn,ym))
+    x = np.reshape(x, (70,45))
 
     diff = abs((gt - x)*mask) # pixel-wise difference
 
@@ -259,12 +283,11 @@ def res_eval(x, date, mask, num_valid_grid_points):
 
     return mae, rmse, corr, ssim_value
 
-def pred():
+def pred(mask=mask):
     val_pred_save_dir = os.path.join(save_dir, 'val_pred')
     test_pred_save_dir = os.path.join(save_dir, 'test_pred')
 
-    mask = np.load("mask/mask_sd5km.npy")
-    mask = np.reshape(mask, (yn,ym))
+    mask = np.reshape(mask, (70,45))
     num_valid_grid_points = mask[mask>0].shape[0]
 
     if not os.path.exists(val_pred_save_dir):
@@ -272,8 +295,8 @@ def pred():
     if not os.path.exists(test_pred_save_dir):
         os.mkdir(test_pred_save_dir)
 
-    model_encoder.load_weights(weights_dir + f"/encoder_variables")
-    model_resolver.load_weights(weights_dir + f"/resolver_variables")
+    model_encoder.load_weights(save_dir + f"/encoder_variables")
+    model_resolver.load_weights(save_dir + f"/resolver_variables")
     data_paths = glob(x_train_path + '/*.npy')
     data_paths.sort()
     # print("len of data paths: ", len(data_paths))
@@ -305,8 +328,8 @@ def pred():
 
     # save file
     df = pd.DataFrame(df)
-    df.to_csv(os.path.join(save_dir, 'val_eval.csv'))
-    with open(os.path.join(save_dir, 'val_eval.txt'), 'a') as f:
+    df.to_csv(os.path.join(save_dir, 'val_eval_topo.csv'))
+    with open(os.path.join(save_dir, 'val_eval_topo.txt'), 'a') as f:
         f.write("Val, MAE, RMSE, Corr, SSIM\n")
         f.write(f"AVG, {str(df['MAE'].mean())}, {str(df['RMSE'].mean())}, {str(df['Corr'].mean())}, {str(df['SSIM'].mean())}\n")
         f.write(f"MED, {str(df['MAE'].median())}, {str(df['RMSE'].median())}, {str(df['Corr'].median())}, {str(df['SSIM'].median())}")
@@ -336,13 +359,13 @@ def pred():
     df = pd.DataFrame(df)
     df.to_csv(os.path.join(save_dir, 'test_eval.csv'))
     with open(os.path.join(save_dir, 'test_eval.txt'), 'a') as f:
-        f.write("Val, MAE, RMSE, Corr, SSIM\n")
+        f.write("Test, MAE, RMSE, Corr, SSIM\n")
         f.write(f"AVG, {str(df['MAE'].mean())}, {str(df['RMSE'].mean())}, {str(df['Corr'].mean())}, {str(df['SSIM'].mean())}\n")
         f.write(f"MED, {str(df['MAE'].median())}, {str(df['RMSE'].median())}, {str(df['Corr'].median())}, {str(df['SSIM'].median())}")
 
-def npytotxt():
-    mask = np.load("mask/mask_sd5km.npy")
-    mask = np.reshape(mask, (yn,ym))
+# save as .txt file
+def npytotxt(mask=mask):
+    mask = np.reshape(mask, (70,45))
     latx5 = np.linspace(start=25.25, stop=22., num=xn*5, endpoint=True)
     lonx5 = np.linspace(start=120., stop=122., num=xm*5, endpoint=True)
     val_pred_txt_save_dir = os.path.join(save_dir, 'val_pred_txt')
@@ -359,7 +382,7 @@ def npytotxt():
         for file in paths:
             date = file[-12:-4]
             pred = np.load(file)
-            pred = np.reshape(pred, (yn,ym))
+            pred = np.reshape(pred, (70,45))
             with open(os.path.join(saveto, f"{date}.txt"), 'a') as f:
                 f.write("lat, lon, precipitation(mm) \n")
                 for row in range(70):
@@ -376,17 +399,17 @@ def npytotxt():
 
     return 0
 
-def QoF():
+# forecast indicators
+def QoF(mask=mask):
     H = []
     M = []
     FA = []
     CN = []
     DATE = []
     threshold = [80, 200, 350, 500]
-    mask = np.load("mask/mask_sd5km.npy")
-    mask = np.reshape(mask, (yn,ym))
+    mask = np.reshape(mask, (70,45))
 
-    qof_save_dir = os.path.join(save_dir, 'QoFs')
+    qof_save_dir = os.path.join(save_dir, 'QoFs_topo')
     if not os.path.exists(qof_save_dir):
         os.mkdir(qof_save_dir)
 

@@ -90,7 +90,7 @@ class EncoderLayer(tf.keras.layers.Layer):
 # Define the Encoder
 class Encoder(tf.keras.Model):
     def __init__(self, xn, xm, num_layers, d_model, num_heads, dff, input_vocab_size, channel,
-                 dropout_rate=0.2):
+                 dropout_rate=0.2, reshape=True):
         super(Encoder, self).__init__()
         self.d_model = d_model
         self.num_layers = num_layers
@@ -98,7 +98,8 @@ class Encoder(tf.keras.Model):
         self.channel = channel
         self.xn = xn
         self.xm = xm
-        self.embedding = tf.keras.layers.Dense(d_model)
+        self.reshape = reshape
+        self.embedding = tf.keras.layers.Dense(dff)
         self.pos_encoding = TrainablePositionalEncoding(input_vocab_size, d_model)
         self.enc_layers = [EncoderLayer(d_model, num_heads, dff, dropout_rate) for _ in range(num_layers)]
         self.output_layer = tf.keras.layers.Dense(1)
@@ -109,13 +110,15 @@ class Encoder(tf.keras.Model):
         for i in range(self.num_layers):
             x = self.enc_layers[i](x, training, mask)
         x = self.output_layer(x)
-        x = tf.reshape(x, [-1, self.xn, self.xm, 1]) # 2D
+        if self.reshape:
+            x = tf.reshape(x, [-1, self.xn, self.xm, 1]) # 2D
         return x
 
 class Resovler(tf.keras.Model):
-    def __init__(self, scale):
+    def __init__(self, scale, topo=None):
         super(Resovler, self).__init__()
         self.scale = scale
+        self.topo = topo # 4D topology array (1,H,W,1)
         self.conv1 = tf.keras.layers.Conv2D(filters=scale**2, kernel_size=(3,3), padding='same', activation='relu')
         self.upsample = tf.keras.layers.Lambda(lambda x: tf.nn.depth_to_space(x, scale)) # subpixel
         self.conv2 = tf.keras.layers.Conv2D(filters=1, kernel_size=(3,3), padding='same', activation='relu')
@@ -124,13 +127,13 @@ class Resovler(tf.keras.Model):
         self.conv4 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3,3), padding='same', activation='relu')
         self.output_layer = tf.keras.layers.Conv2D(filters=1, kernel_size=(3,3), padding='same', activation='relu')
     
-    def call(self, x, topo=None):
+    def call(self, x):
         x = self.conv1(x)
         x = self.upsample(x)
         x = self.conv2(x)
-        if topo is not None:
+        if self.topo is not None:
             batch = tf.shape(x)[0]
-            topo = tf.repeat(topo, batch, axis=0)
+            topo = tf.repeat(self.topo, batch, axis=0)
             x = self.concat([x, topo])
         x = self.conv3(x)
         x = self.conv4(x)

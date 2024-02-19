@@ -5,6 +5,7 @@ import math
 import os
 import numpy as np
 import tensorflow as tf
+from tensorflow import image
 
 def ScaleNeg11(arr, mean=None):
     '''Min-Max scaler to [-1,1]'''
@@ -29,11 +30,26 @@ def concataux(x, auxarr):
     x = np.concatenate((x, auxarr), axis=-1)
     return x
 
+def GetTopology(topo_path, topo_x, topo_y, y_n, y_m, use_01=False, use_log1=False):
+    topo = np.load(topo_path)
+    topo = np.reshape(topo, (1, topo_x, topo_y,1))
+    topo = image.resize(topo, [y_n, y_m], method=image.ResizeMethod.BICUBIC).numpy()
+    topo = np.where(topo<0, 0, topo)
+    if(use_log1):
+        topo = np.log1p(topo)
+    if(use_01):
+        topo = (topo-np.min(topo))/(np.max(topo)-np.min(topo)) # 0 ~ 1
+    return topo
+
 class MyDataset():
     def __init__(self, xtrpath, ytrpath, x_max, y_max, size, aux_path,
-                 shuffle_size, batch_size, seed=None, split=0.9):
+                 shuffle_size, batch_size, x_use_log1=True, y_use_log1=True, 
+                 seed=None, split=0.9, sampling_a=10):
         # self.xtrpath = xtrpath
         # self.ytrpath = ytrpath
+        self.x_use_log1 = x_use_log1
+        self.y_use_log1 = y_use_log1
+
         self.xtrpath = sorted(glob(xtrpath + '/*.npy'))
         self.ytrpath = sorted(glob(ytrpath + '/*.npy'))
         self.x_size = size[0]
@@ -45,6 +61,7 @@ class MyDataset():
         self.batch_size = batch_size
         self.seed = seed
         self.split = split
+        self.sampling_a = sampling_a
 
         self.max = {"input":np.log1p(x_max),"output":np.log1p(y_max)}
         self.len = len(self.xtrpath)
@@ -52,8 +69,8 @@ class MyDataset():
         self.paths = self.__getdatapath__()
         self.aux_boundary_val = {'u':{'min':-19.8128, 'max':22.79312, 'mean':1.49016},
                                  'v':{'min':-23.51668, 'max':23.240267, 'mean':-0.1382056},
-                                 'q700':{'min':96824.2, 'max':103687.2, 'mean':100255.7},
-                                 'msl':{'min':0, 'max':0.0146, 'mean':0.0073},
+                                 'msl':{'min':96824.2, 'max':103687.2, 'mean':100255.7},
+                                 'q700':{'min':0, 'max':0.0146, 'mean':0.0073},
                                  't2m':{'min':-5.2, 'max':32.262, 'mean':13.531},
                                  'lr':{'min':0, 'max':1277.652, 'mean':638.826}}
 
@@ -88,11 +105,19 @@ class MyDataset():
             x = np.load(paths[i][0]).flatten()
             y = np.load(paths[i][1]).flatten()
 
-            x = np.log1p(x)
-            y = np.log1p(y)
+            if self.x_use_log1:
+                x = np.log1p(x)
+            if self.y_use_log1:
+                y = np.log1p(y)
 
             x = Scale01(arr=x, min=0, max=self.max['input'])
             y = Scale01(arr=y, min=0, max=self.max['output'])
+
+            # sampling strategy
+            # sample_prob = 1.0 - tf.math.exp(-self.sampling_a*np.max(x))
+            # if np.random.randn() > sample_prob:
+            #     continue
+
             x = np.expand_dims(x,-1) # HW, 1
 
             if self.aux_path:
@@ -141,18 +166,20 @@ class MyDataset():
         test_dataset = test_dataset.batch(self.batch_size)
         return test_dataset
     
-def datagen(paths, aux_path:dict, x_max, x_size:tuple):
+def datagen(paths, aux_path:dict, x_max, x_size:tuple, x_use_log1=True):
     aux_boundary_val = {'u':{'min':-19.8128, 'max':22.79312, 'mean':1.49016},
                         'v':{'min':-23.51668, 'max':23.240267, 'mean':-0.1382056},
-                        'q700':{'min':96824.2, 'max':103687.2, 'mean':100255.7},
-                        'msl':{'min':0, 'max':0.0146, 'mean':0.0073},
+                        'msl':{'min':96824.2, 'max':103687.2, 'mean':100255.7},
+                        'q700':{'min':0, 'max':0.0146, 'mean':0.0073},
                         't2m':{'min':-5.2, 'max':32.262, 'mean':13.531},
                         'lr':{'min':0, 'max':1277.652, 'mean':638.826}}
+    
     for i in range(len(paths)):
         date = paths[i][-12:] # yyyymmdd.npy
         # print("Date: ", date) # type:=bytes
         x = np.load(paths[i]).flatten()
-        x = np.log1p(x)
+        if x_use_log1:
+            x = np.log1p(x)
         x = Scale01(arr=x, min=0, max=np.log1p(x_max))
         x = np.expand_dims(x,-1)
 

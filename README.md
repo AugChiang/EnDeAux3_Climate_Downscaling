@@ -1,4 +1,4 @@
-# Encoder Decoder with multi-head Attention layers for multi-channel Climate Downscaling (EDA3)
+# Encoder Decoder with multi-head Attention layers for multi-channel Climate Downscaling (EDA)
 An Encoder-Decoder model of Climate Downscaling of ERA5 </br>
 
 training data: ERA5 in Taiwan region with the shape of (14,9)</br> 

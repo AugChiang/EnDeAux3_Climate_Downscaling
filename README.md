@@ -8,7 +8,7 @@ label data: TCCIP grid daily precipitation with the shape of (70,45) (resized)</
 # Model Architecture
 Encoder involves Multi-head Attention Layer and Fully Connected Layer (FC). </br>
 Decoder involves Upsampling Layer with Efficiency Sub-pixel method (of ESPCN) and convolutional layers. </br>
-![image](https://github.com/AugChiang/EnRe3_Climate_Downscaling/blob/main/arch2.png)
+![image](https://github.com/AugChiang/EnRe3_Climate_Downscaling/blob/main/model_fig/arch.png)
 
 # Model Prediction
 

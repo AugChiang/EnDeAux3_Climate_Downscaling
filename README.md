@@ -28,7 +28,7 @@ Compared to traditional statistical downscaling method, BCSD (Bias-Corrected Spa
 ![image](https://github.com/AugChiang/EnRe3_Climate_Downscaling/blob/main/res/bcsd_metric.png)
 
 # Environment
-tensorflow==2.14.0+nv23.11
-numpy==1.24.4
-pandas==1.5.3
-(last updated: 2024/02/21)
+tensorflow==2.14.0+nv23.11 </br>
+numpy==1.24.4 </br>
+pandas==1.5.3 </br>
+(last updated: 2024/02/21) </br>

@@ -1,3 +1,4 @@
+[![DOI](https://zenodo.org/badge/721036525.svg)](https://zenodo.org/doi/10.5281/zenodo.10937919)
 # Encoder Decoder with multi-head Attention layers for multi-channel Climate Downscaling (EDA)
 An Encoder-Decoder model of Climate Downscaling of ERA5 </br>
 

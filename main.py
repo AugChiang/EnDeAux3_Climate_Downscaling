@@ -25,8 +25,12 @@ topo_y = config['resolution'].getint('topo_width')
 vector_length = config['resolution'].getint('vector_length')
 target_sequence_length = vector_length  # Target sequence length matches input
 
-# scsaling factor
+# scaling factor
 scale = config['scale_factor'].getint('scale')
+
+yn = xn*scale # final output height (label height)
+ym = xm*scale # final output width (label width)
+y_ch = config['resolution'].getint('output_ch')
 
 # model training var
 num_epochs = config['training'].getint('num_epochs')
@@ -67,9 +71,17 @@ y_train_path = config['path']['y_training_path']
 topo_path = config['path']['topo_path']
 mask_path = config['path']['mask_path']
 save_dir = config['path']['save_path']
+# root dir of all results
+if not os.path.exists(save_dir):
+    os.mkdir(save_dir)
+
+# encoder and resolver weights save dir
+weights_save_dir = os.path.join(save_dir, "weights")
+if not os.path.exists(weights_save_dir):
+    os.mkdir(weights_save_dir)
 
 mask = np.load(mask_path)
-mask = np.reshape(mask, (xn*scale, xm*scale, 1))
+mask = np.reshape(mask, (yn, ym, 1))
 aux_path = dict(config['aux'])
 channel = 1 + len(aux_path)
 
@@ -77,8 +89,7 @@ channel = 1 + len(aux_path)
 # early stopping
 encoder_patience = config['early_stop'].getint('encoder_patience')
 resolver_patience = config['early_stop'].getint('resolver_patience')
-wait = 0
-best = float('inf')
+
 
 # weighted loss function
 wmse_gamma = config['loss_gamma'].getfloat('wmse_gamma')
@@ -86,31 +97,49 @@ wmse_gamma = config['loss_gamma'].getfloat('wmse_gamma')
 
 # Define loss function (e.g., mean squared error)
 # and optimizer (e.g., Adam)
-loss_object = loss.wmse()
+loss_object = loss.wmse(wmse_gamma)
 optimizer = tf.keras.optimizers.Adam(learning_rate=encoder_lr)  # encoder's
 optimizer2 = tf.keras.optimizers.Adam(learning_rate=resolver_lr) # resolver's
 
 # np.log1p and [0,1], [-1,1] for aux data
-dataset = MyDataset(xtrpath=x_train_path, ytrpath=y_train_path, aux_path=aux_path,
-                    x_use_log1=x_use_log1, y_use_log1=y_use_log1,
-                    shuffle_size=batch_size*shuffle_fac, batch_size=batch_size, seed=random_seed,
-                    x_max=x_max, y_max=y_max, size=((vector_length, channel),(xn*scale, xm*scale,1)))
+dataset = MyDataset(xtrpath=x_train_path,
+                    ytrpath=y_train_path,
+                    aux_path=aux_path,
+                    x_use_log1=x_use_log1,
+                    y_use_log1=y_use_log1,
+                    shuffle_size=batch_size*shuffle_fac,
+                    batch_size=batch_size,
+                    seed=random_seed,
+                    x_max=x_max,
+                    y_max=y_max,
+                    size=((vector_length, channel),(yn, ym, y_ch)),
+                    split=split)
 # topography
 topo = GetTopology(topo_path=topo_path,
-                   topo_x=topo_x, topo_y=topo_y,
-                   y_n=xn*scale, y_m=xm*scale,
-                   use_log1=topo_use_log1, use_01=topo_norm_01)
+                   topo_x=topo_x,
+                   topo_y=topo_y,
+                   y_n=yn,
+                   y_m=ym,
+                   use_log1=topo_use_log1,
+                   use_01=topo_norm_01)
 
-myresolver = Resovler(scale=scale, topo=topo)
-myencoder = Encoder(xn = xn, xm = xm,
-                    num_layers=num_layers, d_model=d_model,
-                    num_heads=num_heads, dff=dff,
+myresolver = Resovler(scale=scale,
+                      topo=topo,
+                      y_ch=y_ch)
+
+myencoder = Encoder(xn = xn,
+                    xm = xm,
+                    num_layers=num_layers,
+                    d_model=d_model,
+                    num_heads=num_heads,
+                    dff=dff,
                     input_vocab_size=vector_length,  # Input vocabulary size matches vector_length
-                    channel=channel, dropout_rate=drop_rate)
+                    channel=channel,
+                    dropout_rate=drop_rate)
 # compile the model
 encoder_input = tf.keras.layers.Input(shape=(vector_length, channel))
 encoder_output = myencoder(encoder_input, training=True, mask=None)
-resolver_input = tf.keras.layers.Input(shape=(xn, xm, 1))
+resolver_input = tf.keras.layers.Input(shape=(xn, xm, 1)) # resolver output default ch = 1
 resolver_output = myresolver(resolver_input, training=True)
 
 # Create the model
@@ -118,34 +147,33 @@ model_encoder = tf.keras.models.Model(inputs=encoder_input, outputs=encoder_outp
 model_resolver = tf.keras.models.Model(inputs=resolver_input, outputs=resolver_output)
 model_encoder.compile(optimizer=[optimizer], loss=loss_object)
 model_resolver.compile(optimizer=[optimizer2], loss=loss_object)
-# model.summary()
+model_encoder.summary()
+model_resolver.summary()
 
-# Training step
-# @tf.function
-# def train_step(inputs, labels, model, lr=False):
-#     with tf.GradientTape() as tape:
-#         predictions = model(inputs, mask=None)
-#         loss = loss_object(labels, predictions, lr=lr)
-
-#     gradients = tape.gradient(loss, model.trainable_variables)
-#     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-
-#     return loss
-
-# @tf.function
-# def val_step(inputs, labels, model, lr=False):
-#     with tf.GradientTape() as tape:
-#         predictions = model(inputs, mask=None)
-#         loss = loss_object(labels, predictions, lr=lr)
-
-#     return loss
+# Training loop
 def train(save_dir=save_dir, num_epochs=num_epochs):
+    '''
+    Training loops.
+    The 1st for-loop over epochs is to train the encoder.
+    The 2nd one is to train the resolver while freezing the encoder weights.
+
+    :param str save_dir: destination of saving the results, including model weights, predictions, evals, etc, defaults to save_dir
+    :param int num_epochs: defaults to num_epochs
+    '''
+    # losses saving
+    loss_save_dir = os.path.join(save_dir, "losses")
+    if not os.path.exists(loss_save_dir):
+        os.mkdir(loss_save_dir)
     tr_history = []
     val_history = []
     # dataset
     train_batch = dataset.train_dataset_gen()
     val_batch = dataset.val_dataset_gen()
-    # Training loop
+
+    # init of early stopping
+    wait = 0
+    best = float('inf')
+
     # training the encoder, freeze the resolver
     for epoch in range(num_epochs):
         tr_loss = []
@@ -183,14 +211,13 @@ def train(save_dir=save_dir, num_epochs=num_epochs):
         if(wait >= encoder_patience):
             break
 
-    # save the trained model
-    if not os.path.exists(save_dir):
-        os.mkdir(save_dir) 
+    # save model weights
+    model_encoder.save_weights(os.path.join(weights_save_dir, "encoder_variables"))
+    print("Complete Saving the Encoder Weights...")
 
-    model_encoder.save_weights(save_dir + f"/encoder_variables")
-    print("Complete Saving the Model Weights...")
-    np.save(os.path.join(save_dir,  'encoder_losses.npy'), np.array(tr_history))
-    np.save(os.path.join(save_dir, 'encoder_val_losses.npy'), np.array(val_history))
+    # save losses as npy files
+    np.save(os.path.join(loss_save_dir,  'encoder_losses.npy'), np.array(tr_history))
+    np.save(os.path.join(loss_save_dir, 'encoder_val_losses.npy'), np.array(val_history))
     print("Complete Saving the Losses...")
 
     # reset early stopping constants
@@ -240,12 +267,16 @@ def train(save_dir=save_dir, num_epochs=num_epochs):
         if(wait >= resolver_patience):
             break
 
-    model_resolver.save_weights(save_dir + f"/resolver_variables")
+    # save resolver weights
+    model_resolver.save_weights(os.path.join(weights_save_dir, "resolver_variables"))
     print("Complete Saving the Model Weights...")
-    np.save(os.path.join(save_dir,  'resolver_tr_losses.npy'), np.array(tr_history))
-    np.save(os.path.join(save_dir, 'resolver_val_losses.npy'), np.array(val_history))
+
+    # save losses as npy
+    np.save(os.path.join(loss_save_dir,  'resolver_tr_losses.npy'), np.array(tr_history))
+    np.save(os.path.join(loss_save_dir, 'resolver_val_losses.npy'), np.array(val_history))
     print("Complete Saving the Losses...")
 
+# used for eval
 def getdatapath(path_list, split=split, seed=random_seed):
     if(seed is not None):
         random.Random(seed).shuffle(path_list) # shuffle the paths with seed
@@ -257,9 +288,9 @@ def getdatapath(path_list, split=split, seed=random_seed):
 # evaluation of x,y
 def res_eval(x, date, mask, num_valid_grid_points, y_path=y_train_path):
     gt = np.load(os.path.join(y_path, date)).astype('float32')
-    gt = np.reshape(gt, (70,45))
+    gt = np.reshape(gt, (yn,ym))
     # x = x.astype('float32')
-    x = np.reshape(x, (70,45))
+    x = np.reshape(x, (yn,ym))
 
     diff = abs((gt - x)*mask) # pixel-wise difference
 
@@ -283,11 +314,10 @@ def res_eval(x, date, mask, num_valid_grid_points, y_path=y_train_path):
 
     return mae, rmse, corr, ssim_value
 
-def pred(mask=mask):
+def pred(mask):
     val_pred_save_dir = os.path.join(save_dir, 'val_pred')
     test_pred_save_dir = os.path.join(save_dir, 'test_pred')
 
-    mask = np.reshape(mask, (70,45))
     num_valid_grid_points = mask[mask>0].shape[0]
 
     if not os.path.exists(val_pred_save_dir):
@@ -295,9 +325,9 @@ def pred(mask=mask):
     if not os.path.exists(test_pred_save_dir):
         os.mkdir(test_pred_save_dir)
 
-    model_encoder.load_weights(save_dir + f"/encoder_variables")
-    model_resolver.load_weights(save_dir + f"/resolver_variables")
-    data_paths = glob(x_train_path + '/*.npy')
+    model_encoder.load_weights(os.path.join(weights_save_dir, "encoder_variables"))
+    model_resolver.load_weights(os.path.join(weights_save_dir, "resolver_variables"))
+    data_paths = glob(os.path.join(x_train_path, '*.npy'))
     data_paths.sort()
     # print("len of data paths: ", len(data_paths))
     _, val_paths, test_paths = getdatapath(data_paths)
@@ -324,7 +354,7 @@ def pred(mask=mask):
         df['Corr'].append(corr)
         df['SSIM'].append(ssim_value)
 
-        print(f"Exporting ... {date}")
+        print(f"Exporting pred on {date}...")
 
     # save file
     df = pd.DataFrame(df)
@@ -353,7 +383,7 @@ def pred(mask=mask):
 
         # save prediction
         np.save(os.path.join(test_pred_save_dir, date), pred)
-        print(f"Exporting ... {date}")
+        print(f"Exporting pred on {date}...")
     
     # save file
     df = pd.DataFrame(df)
@@ -364,8 +394,7 @@ def pred(mask=mask):
         f.write(f"MED, {str(df['MAE'].median())}, {str(df['RMSE'].median())}, {str(df['Corr'].median())}, {str(df['SSIM'].median())}")
 
 # save as .txt file
-def npytotxt(mask=mask):
-    mask = np.reshape(mask, (70,45))
+def npytotxt(mask):
     latx5 = np.linspace(start=25.25, stop=22., num=xn*5, endpoint=True)
     lonx5 = np.linspace(start=120., stop=122., num=xm*5, endpoint=True)
     val_pred_txt_save_dir = os.path.join(save_dir, 'val_pred_txt')
@@ -382,7 +411,7 @@ def npytotxt(mask=mask):
         for file in paths:
             date = file[-12:-4]
             pred = np.load(file)
-            pred = np.reshape(pred, (70,45))
+            pred = np.reshape(pred, (yn,ym))
             with open(os.path.join(saveto, f"{date}.txt"), 'a') as f:
                 f.write("lat, lon, precipitation(mm) \n")
                 for row in range(70):
@@ -391,88 +420,19 @@ def npytotxt(mask=mask):
                             f.write(str(latx5[row]) + ',') # lat
                             f.write(str(lonx5[col]) + ',') # lon
                             f.write(str(pred[row][col]) + '\n') # precipitation value (mm)
-            print(f"Exporting {date}...")
+            print(f"Exporting {date}.txt...")
 
     writetxt(val_pred_paths, val_pred_txt_save_dir)
     writetxt(test_pred_paths, test_pred_txt_save_dir)
     print("Convert npy to txt completed.")
 
-    return 0
+    return
 
 # forecast indicators
-def QoF(mask=mask):
-    H = []
-    M = []
-    FA = []
-    CN = []
-    DATE = []
-    threshold = [80, 200, 350, 500]
-    mask = np.reshape(mask, (70,45))
-
-    qof_save_dir = os.path.join(save_dir, 'QoFs_topo')
-    if not os.path.exists(qof_save_dir):
-        os.mkdir(qof_save_dir)
-
-    val_pred_paths = glob(os.path.join(save_dir, 'val_pred', '*.npy'))
-    test_pred_paths = glob(os.path.join(save_dir, 'test_pred', '*.npy'))
-
-    def Hit(pred, gt, mask, threshold)->int:
-        gt_hit = (gt>=threshold).astype(int)
-        hit = (pred>=threshold).astype(int)
-        hit = hit*gt_hit*mask
-        return hit[hit>0].shape[0]
-
-    def Miss(pred, gt, mask, threshold)->int:
-        gt_hit = (gt>=threshold).astype(int)
-        miss = (pred<threshold).astype(int)
-        miss = miss*gt_hit*mask
-        return miss[miss>0].shape[0]
-
-    def FalseAlarm(pred, gt, mask, threshold)->int:
-        gt_false = (gt<threshold).astype(int)
-        hit = (pred>=threshold).astype(int)
-        hit = hit*gt_false*mask
-        return hit[hit>0].shape[0]
-
-    def CorrectNegative(pred, gt, mask, threshold)->int:
-        gt_false = (gt<threshold).astype(int)
-        miss = (pred<threshold).astype(int)
-        miss = miss*gt_false*mask
-        return miss[miss>0].shape[0]
-
-    def writeqoftxt(paths, datatype:str, saveto=qof_save_dir):
-        flat_mask = mask.flatten()
-        for thre in threshold:
-            name = datatype + '_' + str(thre) + 'mm.txt' # e.g. val_80mm.txt
-            with open(os.path.join(saveto, name), 'a') as f:
-                f.write("Date, Hit, Miss, FA, CN")
-                f.write('\n')
-                for n, path in enumerate(paths):
-                    pred = np.load(path).flatten()
-                    date = path[-12:] # yyyymmdd.npy
-                    gt = np.load(os.path.join(y_train_path, date)).flatten()
-
-                    if np.max(gt)<thre:
-                        # print("Date: ", date)
-                        continue
-                    else:
-                        print(f"Exporting ... {date}")
-                        f.write(date[:-4] + ',')
-                        f.write(str(Hit(pred=pred, gt=gt, mask=flat_mask, threshold=thre))+ ',')
-                        f.write(str(Miss(pred=pred, gt=gt, mask=flat_mask, threshold=thre))+ ',')
-                        f.write(str(FalseAlarm(pred=pred, gt=gt, mask=flat_mask, threshold=thre))+ ',')
-                        f.write(str(CorrectNegative(pred=pred, gt=gt, mask=flat_mask, threshold=thre)))
-
-                        f.write('\n')
-            
-    writeqoftxt(paths=val_pred_paths, datatype='val')
-    writeqoftxt(paths=test_pred_paths, datatype='test')
-    print("Task Completed.")
-
-    return 0
-
+from ForecastIndicators.qof import QoF
 if __name__ == '__main__':
-    train()
-    pred()
-    npytotxt()
-    QoF()
+    mask = np.reshape(mask, (yn,ym))
+    # train()
+    # pred(mask)
+    # npytotxt(mask)
+    # QoF(mask=mask, pred_dir=save_dir, gt_dir=y_train_path)

@@ -115,17 +115,25 @@ class Encoder(tf.keras.Model):
         return x
 
 class Resovler(tf.keras.Model):
-    def __init__(self, scale, topo=None):
+    def __init__(self, scale:int, y_ch:int, topo=None):
+        '''
+        Simple super-resolution of the input via pixel shuffling of ESPCN (Shi et al., 2016)
+
+        :param int scale: scaling factor
+        :param int y_ch: output channels
+        :param _type_ topo: if topographic data is given, then it will concatenate with the ipnut. defaults to None
+        '''
         super(Resovler, self).__init__()
         self.scale = scale
         self.topo = topo # 4D topology array (1,H,W,1)
+        assert len(topo.shape) == 4
         self.conv1 = tf.keras.layers.Conv2D(filters=scale**2, kernel_size=(3,3), padding='same', activation='relu')
         self.upsample = tf.keras.layers.Lambda(lambda x: tf.nn.depth_to_space(x, scale)) # subpixel
         self.conv2 = tf.keras.layers.Conv2D(filters=1, kernel_size=(3,3), padding='same', activation='relu')
         self.concat = tf.keras.layers.Concatenate() # concat with topology
         self.conv3 = tf.keras.layers.Conv2D(filters=32, kernel_size=(3,3), padding='same', activation='relu')
         self.conv4 = tf.keras.layers.Conv2D(filters=64, kernel_size=(3,3), padding='same', activation='relu')
-        self.output_layer = tf.keras.layers.Conv2D(filters=1, kernel_size=(3,3), padding='same', activation='relu')
+        self.output_layer = tf.keras.layers.Conv2D(filters=y_ch, kernel_size=(3,3), padding='same', activation='relu')
     
     def call(self, x):
         x = self.conv1(x)

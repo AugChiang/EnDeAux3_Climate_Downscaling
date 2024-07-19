@@ -4,7 +4,7 @@ from Encoder_uv import loss
 from helper_func.data_gen import datagen, getdatapath
 from helper_func.eval import res_eval
 from helper_func.npy2txt import npytotxt
-from ForecastIndicators.qof import QoF # forecast indicators
+from forecast_indicators.qof import QoF # forecast indicators
 import numpy as np
 import os
 from glob import glob

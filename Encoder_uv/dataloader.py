@@ -7,22 +7,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import image
 import json
-
-def ScaleNeg11(arr, mean=None):
-    '''Min-Max scaler to [-1,1]'''
-    if(mean is None):
-       mean = np.mean(arr)
-    min = np.min(arr)
-    max = np.max(arr)
-    return (arr-mean)/(max-min)
-
-def Scale01(arr, min=None, max=None):
-    '''Min-Max scaler to [0,1]'''
-    if(min is None):
-        min = np.min(arr)
-    if(max is None):
-        max = np.max(arr)
-    return (arr-min)/(max-min)
+from .scaler import Scale01, ScaleNeg11
 
 def concataux(x, auxarr):
     '''
@@ -39,9 +24,15 @@ def concataux(x, auxarr):
     x = np.concatenate((x, auxarr), axis=-1)
     return x
 
-def GetTopology(topo_path, topo_x, topo_y, y_n, y_m, use_01=False, use_log1=False):
+def GetTopology(topo_path,
+                topo_x,
+                topo_y,
+                y_n,
+                y_m,
+                use_01=False,
+                use_log1=False):
     topo = np.load(topo_path)
-    topo = np.reshape(topo, (1, topo_x, topo_y,1))
+    topo = np.reshape(topo, (1, topo_x, topo_y, 1))
     topo = image.resize(topo, [y_n, y_m], method=image.ResizeMethod.BICUBIC).numpy()
     topo = np.where(topo<0, 0, topo)
     if(use_log1):
@@ -69,9 +60,11 @@ class MyDataset():
                  y_use_log1:bool=True, 
                  seed=None,
                  split:float=0.9,
-                 sampling_a:float=10.):
+                 sampling_fac:float=10.):
         '''
         Data generator of training data, auxiliary data and corresponding ground truth data
+
+        Parameters
         -----
         :param str xtrpath: training data path.
         :param str ytrpath: ground truth data path.
@@ -84,7 +77,7 @@ class MyDataset():
         :param bool y_use_log1: if use "np.log1p()", defaults to True
         :param _type_ seed: random seed, defaults to None
         :param float split: training data split ratio, defaults to 0.9
-        :param float sampling_a: data sampling weight, defaults to 10.
+        :param float sampling_fac: data sampling weight, defaults to 10.
         '''
 
         # self.xtrpath = xtrpath
@@ -103,7 +96,7 @@ class MyDataset():
         self.batch_size = batch_size
         self.seed = seed
         self.split = split
-        self.sampling_a = sampling_a
+        self.sampling_fac = sampling_fac
 
         self.max = {"input":np.log1p(x_max),"output":np.log1p(y_max)}
         self.len = len(self.xtrpath)
@@ -151,14 +144,17 @@ class MyDataset():
             y = Scale01(arr=y, min=0, max=self.max['output'])
 
             # sampling strategy
-            # sample_prob = 1.0 - tf.math.exp(-self.sampling_a*np.max(x))
+            # sample_prob = 1.0 - tf.math.exp(-self.sampling_fac*np.max(x))
             # if np.random.randn() > sample_prob:
             #     continue
 
             x = np.expand_dims(x,-1) # HW, 1
 
+            # concat aux data with the training datas along the channel axis
             if self.aux_path:
                 for auxkey in self.aux_path.keys():
+                    if auxkey == 'stat': # skip the bring-in statistis of aux data.
+                        continue
                     auxarr = np.load(os.path.join(self.aux_path[auxkey], auxkey+'_'+date)).flatten()
                     if auxkey in ['u', 'v']:
                         auxarr = ScaleNeg11(arr=auxarr, mean=self.aux_boundary_val[auxkey]['mean'])
@@ -202,42 +198,3 @@ class MyDataset():
                 output_shapes = (self.x_size, self.y_size))
         test_dataset = test_dataset.batch(self.batch_size)
         return test_dataset
-    
-def datagen(paths,
-            aux_path:dict,
-            x_max:float,
-            x_size:tuple,
-            x_use_log1=True):
-
-    aux_boundary_val = {'u':{'min':-19.8128, 'max':22.79312, 'mean':1.49016},
-                        'v':{'min':-23.51668, 'max':23.240267, 'mean':-0.1382056},
-                        'msl':{'min':96824.2, 'max':103687.2, 'mean':100255.7},
-                        'q700':{'min':0, 'max':0.0146, 'mean':0.0073},
-                        't2m':{'min':-5.2, 'max':32.262, 'mean':13.531},
-                        'lr':{'min':0, 'max':1277.652, 'mean':638.826}}
-    
-    for i in range(len(paths)):
-        date = paths[i][-12:] # yyyymmdd.npy
-        # print("Date: ", date) # type:=bytes
-        x = np.load(paths[i]).flatten()
-        if x_use_log1:
-            x = np.log1p(x)
-        x = Scale01(arr = x,
-                    min = 0,
-                    max = np.log1p(x_max))
-        x = np.expand_dims(x,-1)
-
-        if aux_path:
-            for auxkey in aux_path.keys():
-                auxarr = np.load(os.path.join(aux_path[auxkey], auxkey+'_'+date)).flatten()
-                if auxkey in ['u', 'v']:
-                    auxarr = ScaleNeg11(arr = auxarr,
-                                        mean = aux_boundary_val[auxkey]['mean'])
-                else:
-                    auxarr = Scale01(auxarr,
-                                     min=aux_boundary_val[auxkey]['min'],
-                                     max=aux_boundary_val[auxkey]['max'])   
-                x = concataux(x, auxarr)
-
-        x = np.reshape(x, x_size)
-        yield x, date

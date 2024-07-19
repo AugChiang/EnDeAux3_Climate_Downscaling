@@ -5,7 +5,9 @@ from tensorflow.keras.layers import Concatenate
 from tensorflow.keras import Model
 from tensorflow.nn import depth_to_space
 from tensorflow import reshape, shape, repeat, range
-
+'''
+    Write model layers in a function way.    
+'''
 def SelfAttentionLayer(input, d_model, num_heads, dff, dropout_rate=0.2):
     # Multi-head self-attention
     x = MultiHeadAttention(num_heads=num_heads,
